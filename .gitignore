@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Data & models (do not commit large artifacts)
+data/
+*.parquet
+*.csv
+models/
+*.pkl
+*.txt.model
+mlruns/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Env & IDE
+.env
+.vscode/
+.idea/
+.DS_Store
