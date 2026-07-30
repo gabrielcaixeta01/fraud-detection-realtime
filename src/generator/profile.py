@@ -9,9 +9,33 @@ See docs/PHASE_1.md, Step 2.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
+import numpy as np
 from faker import Faker
+
+# --- Merchant universe -------------------------------------------------------
+# Built once at import time, with its own RNG, so the id -> category mapping is
+# identical no matter which seed the profiles use. normal.py and fraud.py import
+# these directly: the same merchant_id must ALWAYS map to the same category.
+MERCHANT_CATEGORIES_POOL = [
+    "grocery",
+    "fuel",
+    "restaurant",
+    "online",
+    "travel",
+    "electronics",
+    "pharmacy",
+]
+N_MERCHANTS = 200
+
+_merchant_rng = np.random.default_rng(0)
+ALL_MERCHANT_IDS: list[str] = [f"m_{j:05d}" for j in range(N_MERCHANTS)]
+MERCHANT_CATEGORIES: dict[str, str] = {
+    merchant_id: str(_merchant_rng.choice(MERCHANT_CATEGORIES_POOL))
+    for merchant_id in ALL_MERCHANT_IDS
+}
 
 
 @dataclass
@@ -54,8 +78,7 @@ class UserProfile:
         `fraud.inject_amount_anomaly`, which needs a baseline to deviate from
         without having to scan the user's generated history.
         """
-        # TODO(you): implement the log-normal mean formula.
-        raise NotImplementedError
+        return math.exp(self.amount_mu + self.amount_sigma**2 / 2)
 
     @property
     def baseline_amount_std(self) -> float:
@@ -63,8 +86,10 @@ class UserProfile:
 
         Closed form: ``sqrt((exp(sigma**2) - 1) * exp(2*mu + sigma**2))``.
         """
-        # TODO(you): implement the log-normal std-dev formula.
-        raise NotImplementedError
+        variance = (math.exp(self.amount_sigma**2) - 1) * math.exp(
+            2 * self.amount_mu + self.amount_sigma**2
+        )
+        return math.sqrt(variance)
 
 
 def generate_user_profiles(n_users: int, seed: int = 42) -> list[UserProfile]:
@@ -83,39 +108,40 @@ def generate_user_profiles(n_users: int, seed: int = 42) -> list[UserProfile]:
     """
     fake = Faker()
     Faker.seed(seed)
-    # TODO(you): rng = np.random.default_rng(seed)
-
-    # TODO(you): build the merchant universe ONCE, before the loop — every user's
-    # familiar set should be a subset of the same global pool, otherwise "unfamiliar
-    # merchant" is meaningless across users. Suggested: ~200 merchant ids paired with
-    # a category drawn from a fixed list (grocery, fuel, restaurant, online, travel,
-    # electronics, pharmacy). Keep the id -> category mapping around; normal.py needs
-    # it to fill Transaction.merchant_category. Consider returning it, or moving it to
-    # a module-level constant / small `Merchant` dataclass if you prefer.
+    rng = np.random.default_rng(seed)
 
     profiles: list[UserProfile] = []
-    for _ in range(n_users):
-        # TODO(you): sample one profile. Guidance per field:
-        #
-        #   user_id / card_id  -> stable unique strings, e.g. f"u_{i:05d}" / f"c_{i:05d}".
-        #                         Prefer deterministic ids over uuid4 (uuid4 ignores the seed).
-        #   name               -> fake.name()
-        #   home lat/long      -> pick a plausible bounded region rather than the whole
-        #                         globe, so "distance from home" has a sane scale.
-        #                         e.g. lat ~ Uniform(-23.7, -23.4), long ~ Uniform(-46.8, -46.4)
-        #                         for São Paulo. A single tight region also makes the
-        #                         geo-velocity fraud pattern stand out clearly.
-        #   geo_jitter_std     -> small, per-user, e.g. Uniform(0.005, 0.02) degrees.
-        #   amount_mu          -> Normal(3.2, 0.4)-ish. Remember exp(3.2) ~= 25 currency
-        #                         units, so this sets the user's typical spend.
-        #   amount_sigma       -> Uniform(0.4, 0.9). Bigger sigma = heavier tail = more
-        #                         naturally-large purchases = harder amount-anomaly task.
-        #   active_hours       -> a contiguous-ish waking window, e.g. start ~ randint(6, 10)
-        #                         and 12-16 consecutive hours mod 24. Do NOT give everyone
-        #                         the same window; hour-of-day should still be learnable.
-        #   familiar_merchants -> sample 5-15 ids WITHOUT replacement from the global pool.
-        #
-        # Then: profiles.append(UserProfile(...))
-        pass
+    for i in range(n_users):
+        # Waking window: a contiguous run of 12-16 hours starting somewhere in the
+        # morning. `% 24` wraps the tail past midnight — a 9h start with a 16h window
+        # legitimately runs to 01:00. Varying the window per user keeps hour-of-day a
+        # learnable signal instead of a global rule.
+        window_start = int(rng.integers(6, 10))
+        window_length = int(rng.integers(12, 17))
+        active_hours = [(window_start + h) % 24 for h in range(window_length)]
 
-    return profiles  # placeholder: empty until the loop above is implemented
+        # Without replacement: a repeated id would skew the "familiar merchant" draw
+        # in normal.py.
+        n_familiar = int(rng.integers(5, 16))
+        familiar_merchants = [
+            str(m) for m in rng.choice(ALL_MERCHANT_IDS, size=n_familiar, replace=False)
+        ]
+
+        profiles.append(
+            UserProfile(
+                user_id=f"u_{i:05d}",
+                card_id=f"c_{i:05d}",
+                name=fake.name(),
+                # São Paulo-ish box: a tight region keeps "distance from home" on a
+                # sane scale and makes the geo-velocity jump unmistakable.
+                home_latitude=float(rng.uniform(-23.7, -23.4)),
+                home_longitude=float(rng.uniform(-46.8, -46.4)),
+                geo_jitter_std=float(rng.uniform(0.005, 0.02)),
+                amount_mu=float(rng.normal(3.2, 0.4)),
+                amount_sigma=float(rng.uniform(0.4, 0.9)),
+                active_hours=active_hours,
+                familiar_merchants=familiar_merchants,
+            )
+        )
+
+    return profiles
